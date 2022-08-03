@@ -1,27 +1,49 @@
 """
 Encode KV pairs into JSON
 """
-from curses.ascii import isdigit
+from ensurepip import version
 import json
 import re
-from tokenize import maybe
-from click import option
+import base64
+import pkg_resources
 from loguru import logger
 from pjo.Value import Value, Object_, Array, String, Number, Bool, Null
 
 
 class Encoder:
+    VERSION = pkg_resources.get_distribution("pjo").version
+    VERSION_JSON = '{version:"' + VERSION + '"}'
     DELIM = "="
+    DELIMS = ["=", "@"]
     OPTIONS = {
         "-a": {"helpText": "return an array"},
         "-h": {"helpText": "display this text"},
         "-p": {"helpText": "pretty print"},
         "-l": {"helpText": "log stuff"},
+        "-B": {"helpText": "disable boolean true/false/null detection"},
+        "-D": {"helpText": "de-duplicate object keys"},
+        "-e": {"helpText": "ignore empty input"},
+        "-v": {"helpText": "show version"},
+        "-V": {"helpText": "show verison as JSON"},
+        "k=@<fileOrValue>": {"helpText": "read a file"},
+        "k=%<fileOrValue>": {"helpText": "encode a file or value into base64"},
+        "k=:something.json": {"helpText": "read in a json file"},
     }
     SEPERATORS = [",", ":"]
     INDENT_SIZE = 3
 
+    ESCAPABLE_CHARACTERS = []
+
     def encode(input: list[str]) -> str:
+        if "-h" in input:
+            return json.dumps(Encoder.OPTIONS, indent=Encoder.INDENT_SIZE)
+
+        elif "-v" in input:
+            return Encoder.VERSION
+
+        elif "-V" in input:
+            return Encoder.VERSION_JSON
+
         if "-l" not in input:
             logger.disable("pjo")
 
@@ -38,6 +60,15 @@ class Encoder:
             return json.dumps(list(args), separators=Encoder.SEPERATORS)
 
         obj = Encoder._kvpairs_to_dict(args, options)
+
+        if "-D" in options:
+            logger.debug("de-duplicating keys")
+            tmp = {}
+            for key in obj.keys():
+                if not tmp.get(key):
+                    tmp[key] = obj[key]
+            obj = tmp
+
         if "-p" in options:
             return json.dumps(obj, indent=Encoder.INDENT_SIZE)
         return json.dumps(obj, separators=Encoder.SEPERATORS)
@@ -66,16 +97,18 @@ class Encoder:
 
             # in this case we are just building a list.
             elif "-a" in input:
-                args.append(Encoder._to_value(e))
+                args.append(Encoder._to_value(e, options))
 
             # Maybe KV pair if DELIM in e and DELIM is not the first element (we can have key with no value usually)
-            elif Encoder.DELIM in e:
+            elif Encoder.DELIM in e or "@" in e or "=%" in e or "=:":
                 args.append(Encoder._key_value_split(e))
 
             else:
-                raise ValueError(f"an invalid token has been passed in: {e}")
+                raise ValueError(
+                    f"an invalid token has been passed in: {e}.  Most likely no delimiter was found."
+                )
 
-        if len(args) == 0:
+        if len(args) == 0 and "-e" not in options:
             raise ValueError("no kvpairs provided!")
 
         return args, options
@@ -86,21 +119,23 @@ class Encoder:
         d = {}
         a = []
 
-        if len(args) == 0:
-            raise ValueError(f"empty list of args")
+        if len(args) == 0 and "-e" not in options:
+            raise ValueError(
+                f"empty list of args, use -e if you might have empty input"
+            )
 
         if "-a" in options:
             for (key, value) in args:
-                a.append(Encoder._to_value(value))
+                a.append(Encoder._to_value(value, options))
             return a
 
         for (key, value) in args:
-            d[key] = Encoder._to_value(value)
+            d[key] = Encoder._to_value(value, options)
         return d
 
-    def _to_value(maybe_value: str) -> Value:
+    def _to_value(maybe_value: str, options: list = list()) -> Value:
         # is it empty or Null?
-        if not len(maybe_value) or maybe_value in ["null"]:
+        if not len(maybe_value) or maybe_value in ["null"] and "-B" not in options:
             val = Null().value
 
         # is it a nested object?
@@ -117,7 +152,7 @@ class Encoder:
             for e in maybe_value[1:-1].split(","):
                 e.replace(" ", "")
 
-                e2v = Encoder._to_value(e)
+                e2v = Encoder._to_value(e, options)
 
                 if type(e2v) == str:
                     e2v = e2v[1:-1]
@@ -142,17 +177,23 @@ class Encoder:
             logger.debug(f"found NegInt -> {val}")
 
         # booleans
-        elif Encoder._is_bool(maybe_value):
+        elif Encoder._is_bool(maybe_value) and "-B" not in options:
             val = Encoder._str_to_boolean(maybe_value)
             logger.debug(f"found bool -> {val}")
 
         # bools it a valid string?
         elif Encoder._is_string(maybe_value):
-            val = String(value=maybe_value).value
+            maybe_value: str
+            val = maybe_value.strip("\\")
             logger.debug(f"found string -> {val}")
 
         else:
-            val = "ERROR"
+            # this case could get wrapped into the is_string case
+            # having an additional case allows for some more contextual logging.
+            logger.debug(
+                f"unable to parse {maybe_value} into a type. catch all is to treat it as a string.  If the the -B flag is set then booleans and nulls will be treated like strings."
+            )
+            val = maybe_value
 
         return val
 
@@ -170,25 +211,105 @@ class Encoder:
 
     @staticmethod
     def _key_value_split(key_value_pair: str) -> tuple[str, str]:
-        # TODO arg handling
         if len(key_value_pair) == 0:
             raise ValueError("input str is empty")
 
-        # no empty strings
-        if key_value_pair[0] == Encoder.DELIM:
-            raise ValueError(
-                f"delim is first elem in {key_value_pair}.  We *must* have a key, values are usually optional."
+        # special case: the value is a file.  read it and pass the contents as a value.
+        if (
+            Encoder.DELIM in key_value_pair
+            and "@" in key_value_pair
+            and "=@" in key_value_pair
+        ):
+            logger.debug(f"attempting to read in a file in kvpair {key_value_pair}")
+            kv_list = key_value_pair.split("=@", maxsplit=1)
+            key = kv_list[0]
+            maybe_filename = kv_list[1]
+            try:
+                with open(maybe_filename) as f:
+                    contents = f.read().strip("\n")
+                    return key, contents
+            except FileNotFoundError as e:
+                logger.error(
+                    f"could not file file {maybe_filename}. are you trying to encode something like a twitter handle? include an escape character please"
+                )
+                return key, maybe_filename
+
+        # special case 2: the value is a file.  same as above but base64 encoded
+        # if its not a file, enocde it anyways!
+        elif (
+            Encoder.DELIM in key_value_pair
+            and "%" in key_value_pair
+            and "=%" in key_value_pair
+        ):
+            logger.debug(
+                f"attempting to read in a file in kvpair {key_value_pair} and then encode it"
             )
+            kv_list = key_value_pair.split("=%", maxsplit=1)
+            key = kv_list[0]
+            maybe_filename = kv_list[1]
+            try:
+                with open(maybe_filename) as f:
+                    contents = f.read().strip("\n")
+                    encoded = Encoder._b64_stringify(contents)
+                    return key, encoded
+            except FileNotFoundError as e:
+                logger.error(
+                    f"could not file file {maybe_filename}, it must be a value. encoding that instead."
+                )
+                return key, Encoder._b64_stringify(maybe_filename)
 
-        # must have delim
-        if Encoder.DELIM not in key_value_pair:
-            raise ValueError(f"invalid token {key_value_pair}")
+        # special case 3: its a json file
+        elif (
+            Encoder.DELIM in key_value_pair
+            and ":" in key_value_pair
+            and "=:" in key_value_pair
+        ):
+            logger.debug(
+                f"attempting to read in a json file in kvpair {key_value_pair}"
+            )
+            kv_list = key_value_pair.split("=:", maxsplit=1)
+            key = kv_list[0]
+            maybe_filename = kv_list[1]
 
-        # split key and value
-        kv_list = key_value_pair.split(Encoder.DELIM, maxsplit=1)
-        return kv_list[0], kv_list[1]
+            try:
+                with open(maybe_filename) as f:
+                    json_data: dict = json.load(f)
+                    contents: str = json.dumps(json_data, separators=Encoder.SEPERATORS)
+                    return key, contents
+            except FileNotFoundError as e:
+                logger.error(
+                    f"could not file file {maybe_filename}, it must be a value. encoding that instead."
+                )
+                return key, maybe_filename
 
-        # k={k2=v2}
+        elif Encoder.DELIM in key_value_pair:
+            logger.debug(f"splitting {key_value_pair} along {Encoder.DELIM}")
+            kv_list = key_value_pair.split(Encoder.DELIM, maxsplit=1)
+            return kv_list[0], kv_list[1]
+
+        #   pjo treats key@value specifically as boolean JSON elements:
+        #   if the value begins with T, t, or the numeric value is greater than zero, the result is true, else false.
+        elif "@" in key_value_pair:
+            logger.debug(f"type coercion: splitting {key_value_pair} along @")
+            kv_list = key_value_pair.split("@", maxsplit=1)
+            key = kv_list[0]
+            value = kv_list[1]
+
+            value = Encoder._to_value(value, options)
+            if type(value) == str and len(value) and value[0] in ["T", "t"]:
+                value = "true"
+            elif type(value) == int and value > 0:
+                value = "true"
+            elif type(value) == float and value > 0:
+                value = "true"
+            else:
+                value = "false"
+
+            return key, value
+
+    @staticmethod
+    def _b64_stringify(s: str) -> str:
+        return str(base64.b64encode(s.encode("ascii")))[2:-1]
 
     @staticmethod
     def _is_string(input: str) -> bool:
