@@ -1,7 +1,6 @@
 """
 Encode KV pairs into JSON
 """
-from ensurepip import version
 import json
 import re
 import base64
@@ -295,7 +294,7 @@ class Encoder:
             key = kv_list[0]
             value = kv_list[1]
 
-            value = Encoder._to_value(value, options)
+            value = Encoder._to_value(value)
             if type(value) == str and len(value) and value[0] in ["T", "t"]:
                 value = "true"
             elif type(value) == int and value > 0:

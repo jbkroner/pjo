@@ -1,5 +1,6 @@
 from pjo.Encoder import Encoder
 import pytest
+import os
 
 
 class TestSplitArgOptions:
@@ -29,12 +30,6 @@ class TestSplitArgOptions:
         args, options = Encoder.split_args_options(input)
         assert args == [("k", "v"), ("k2", "v2")]
         assert options == []
-
-    def test_valid_002(self):
-        input = ["-a", "k=v"]
-        args, options = Encoder.split_args_options(input)
-        assert args == [("k", "v")]
-        assert options == ["-a"]
 
 
 class TestBuildDict:
@@ -154,6 +149,159 @@ class TestKeyValueSplit:
         assert result_key == expected_key
         assert result_value == expected_value
 
+    # first special case -> =@
+    def test_equals_ampersand_000(self):
+        path = "./tests/dummy.txt"
+        input = f"key=@{path}"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "key"
+        expected_value = "someData"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    # json files work with =@ (but you shoudl use =:)
+    def test_equals_ampersand_001(self):
+        path = "./tests/dummy.json"
+        input = f"key=@{path}"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "key"
+        expected_value = '{"dummyKey":"dummyValue"}'
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    # when we can't a file we make it a string
+    def test_equals_ampersand_002(self):
+        path = "doesnotexist.json"
+        input = f"key=@{path}"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "key"
+        expected_value = path
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    # =%: base64 encode file contents or values
+    # we already know the encoding works, just checking that files
+    # are opened and that exceptions are handled accordingly
+    def test_equals_percent_000(self):
+        path = "./tests/dummy.txt"
+        input = f"key=%{path}"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "key"
+        expected_value = "c29tZURhdGE="
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_equals_ampersand_001(self):
+        path = "doesnotexist.json"
+        input = f"key=%{path}"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "key"
+        expected_value = "ZG9lc25vdGV4aXN0Lmpzb24="
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    # =: - backwards walrus operator?
+    def test_walrus_000(self):
+        path = "./tests/dummy.json"
+        input = f"key=:{path}"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "key"
+        expected_value = '{"dummyKey":"dummyValue"}'
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    # when we can't a file we make it a string
+    def test_walrus_001(self):
+        path = "doesnotexist.json"
+        input = f"key=:{path}"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "key"
+        expected_value = path
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    ## key@v
+    # pjo treats key@value specifically as boolean JSON elements:
+    # if the value begins with T, t, or the numeric value is greater than zero, the result is true, else false.
+    def test_key_at_val_false_000(self):
+        input = "k@0"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "false"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_key_at_val_false_001(self):
+        input = "k@f"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "false"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_key_at_val_false_002(self):
+        input = "k@0"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "false"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_key_at_val_false_002(self):
+        input = "k@0.0"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "false"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_key_at_val_true_000(self):
+        input = "k@t"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "true"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_key_at_val_true_001(self):
+        input = "k@T"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "true"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_key_at_val_true_001(self):
+        input = "k@1"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "true"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
+    def test_key_at_val_true_001(self):
+        input = "k@1.1"
+        result_key, result_value = Encoder._key_value_split(input)
+        expected_key = "k"
+        expected_value = "true"
+
+        assert result_key == expected_key
+        assert result_value == expected_value
+
 
 class Test_is_string:
     def test_is_string_true(self):
@@ -176,6 +324,16 @@ class Test_is_string:
 
     def test_is_string_bool_001(self):
         assert Encoder._is_string("false") == False
+
+
+class Test_b64_stringify:
+    def test_000(self):
+        s = "1234"
+        assert Encoder._b64_stringify(s) == "MTIzNA=="
+
+    def test_001(self):
+        s = "1234"
+        assert Encoder._b64_stringify(s) != "b/'MTIzNA==/'"
 
 
 class Test_Is_Bool:
