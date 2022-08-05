@@ -1,0 +1,18 @@
+attrs==22.1.0
+black==22.6.0
+build==0.8.0
+click==8.1.3
+iniconfig==1.1.1
+loguru==0.6.0
+mypy-extensions==0.4.3
+packaging==21.3
+pathspec==0.9.0
+pep517==0.13.0
+-e git+https://github.com/jbkroner/pjo.git@38ff8eff1a152884c4beb9c12760314ef3285796#egg=pjo
+platformdirs==2.5.2
+pluggy==1.0.0
+py==1.11.0
+pyparsing==3.0.9
+pytest==7.1.2
+tomli==2.0.1
+typing_extensions==4.3.0
